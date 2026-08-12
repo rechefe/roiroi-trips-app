@@ -443,6 +443,8 @@
     transition:transform .12s ease, background .12s ease, color .35s ease, border-color .35s ease;
   }
   .link-btn:hover{background:#fff; transform:translate(1px,1px);}
+  body.theme-dark .link-btn{background:rgba(36,36,25,.88); color:var(--ink);}
+  body.theme-dark .link-btn:hover{background:rgba(36,36,25,1);}
 
   /* ---------- TRIP / PROFILE CARDS ---------- */
   .trip-card{
@@ -537,6 +539,33 @@
   }
   .switch.on .switch-knob{transform:translateX(-24px);}
 
+  /* ---------- MODAL (replaces window.prompt, which is silently blocked in installed PWAs) ---------- */
+  .modal-overlay{
+    position:fixed; inset:0; z-index:100;
+    background:rgba(0,0,0,.55);
+    display:flex; align-items:center; justify-content:center;
+    padding:20px;
+  }
+  .modal-box{
+    background:var(--card);
+    border:2.5px solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:var(--sh);
+    padding:20px;
+    max-width:360px;
+    width:100%;
+  }
+  .modal-title{font-weight:800; font-size:1.05rem; margin-bottom:8px;}
+  .modal-message{font-size:.88rem; color:var(--muted); margin-bottom:14px;}
+  .modal-code-row{display:flex; gap:8px; align-items:center; margin-bottom:16px;}
+  .modal-code{
+    flex:1; font-size:1.35rem; font-weight:800; letter-spacing:.15em; text-align:center;
+    background:var(--brand-light); border:2px solid var(--line); border-radius:10px; padding:10px;
+    color:var(--brand-dark);
+  }
+  .modal-actions{display:flex; gap:10px; justify-content:flex-end;}
+  .modal-actions .btn-primary{width:auto; margin-top:0; padding:11px 20px; font-size:1rem;}
+
   @media print{
     .topbar,.no-print,.page-bg,.settings-fab{display:none !important;}
     body{background:#fff;}
@@ -559,6 +588,22 @@
 <div class="topbar no-print" id="topbar">
   <button class="back-btn" id="backBtn" onclick="goBack()">→ חזרה</button>
   <span class="topbar-title" id="topbarTitle"></span>
+</div>
+
+<div class="modal-overlay no-print" id="modalOverlay" style="display:none;" onclick="if(event.target===this) closeModal(null)">
+  <div class="modal-box" role="dialog" aria-modal="true">
+    <div class="modal-title" id="modalTitle" style="display:none;"></div>
+    <div class="modal-message" id="modalMessage" style="display:none;"></div>
+    <input type="text" class="text-input" id="modalInput" style="display:none;">
+    <div class="modal-code-row" id="modalCodeRow" style="display:none;">
+      <div class="modal-code" id="modalCodeText"></div>
+      <button class="btn-secondary" id="modalCopyBtn" type="button" onclick="copyModalCode()">העתק</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="modalCancelBtn" type="button" onclick="closeModal(null)">ביטול</button>
+      <button class="btn-primary" id="modalOkBtn" type="button" onclick="confirmModal()">אישור</button>
+    </div>
+  </div>
 </div>
 
 <div class="section-quicknav no-print" id="sectionQuickNav" style="display:none;">
@@ -646,6 +691,13 @@
         </div>
         <button class="switch" id="soundSwitch" onclick="toggleSound()" aria-pressed="false"><span class="switch-knob"></span></button>
       </div>
+      <div class="setting-row" id="volumeRow" style="display:none;">
+        <div style="flex:1;">
+          <div class="setting-title">עוצמת קול</div>
+          <div class="setting-desc">כוונון עוצמת מוזיקת הרקע</div>
+          <input type="range" id="volumeSlider" min="0" max="100" value="70" oninput="setVolume(this.value)" style="width:100%;margin-top:10px;accent-color:var(--brand);">
+        </div>
+      </div>
       <div class="setting-row">
         <div>
           <div class="setting-title">מצב תצוגה</div>
@@ -654,6 +706,7 @@
         <button class="switch" id="themeSwitch" onclick="toggleTheme()" aria-pressed="false"><span class="switch-knob"></span></button>
       </div>
       <p class="note" style="margin-top:12px;">שים לב: חלק מהדפדפנים חוסמים ניגון אוטומטי עם קול — אם המוזיקה לא מתחילה, נסה לכבות ולהדליק שוב את המתג.</p>
+      <p class="note" style="margin-top:14px;text-align:center;">גרסה <span id="appVersionLabel"></span></p>
     </div>
   </section>
 
@@ -874,6 +927,56 @@ function saveJSON(key, val){
   try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){}
 }
 
+/* ---------- MODAL (Promise-based replacement for window.prompt/alert,
+   which installed/standalone PWAs on iOS silently block) ---------- */
+
+let modalResolver = null;
+
+function openModal({title='', message='', input=false, value='', code=null, okText='אישור', cancelText='ביטול', showCancel=true} = {}){
+  return new Promise(resolve=>{
+    modalResolver = resolve;
+    const titleEl = document.getElementById('modalTitle');
+    titleEl.textContent = title;
+    titleEl.style.display = title ? '' : 'none';
+    const msgEl = document.getElementById('modalMessage');
+    msgEl.textContent = message;
+    msgEl.style.display = message ? '' : 'none';
+    const inputEl = document.getElementById('modalInput');
+    inputEl.style.display = input ? '' : 'none';
+    inputEl.value = value || '';
+    document.getElementById('modalCodeRow').style.display = code ? 'flex' : 'none';
+    document.getElementById('modalCodeText').textContent = code || '';
+    document.getElementById('modalOkBtn').textContent = okText;
+    const cancelBtn = document.getElementById('modalCancelBtn');
+    cancelBtn.style.display = showCancel ? '' : 'none';
+    cancelBtn.textContent = cancelText;
+    document.getElementById('modalOverlay').style.display = 'flex';
+    if(input) setTimeout(()=>inputEl.focus(), 50);
+  });
+}
+
+function closeModal(result){
+  document.getElementById('modalOverlay').style.display = 'none';
+  if(modalResolver){ const resolve = modalResolver; modalResolver = null; resolve(result); }
+}
+
+function confirmModal(){
+  const inputEl = document.getElementById('modalInput');
+  const isInput = inputEl.style.display !== 'none';
+  closeModal(isInput ? inputEl.value : true);
+}
+
+function copyModalCode(){
+  const text = document.getElementById('modalCodeText').textContent;
+  if(!navigator.clipboard || !navigator.clipboard.writeText) return;
+  navigator.clipboard.writeText(text).then(()=>{
+    const btn = document.getElementById('modalCopyBtn');
+    const orig = btn.textContent;
+    btn.textContent = 'הועתק ✓';
+    setTimeout(()=>{ btn.textContent = orig; }, 1500);
+  }).catch(()=>{});
+}
+
 /* ---------- PROFILES & DATA (with legacy migration) ---------- */
 
 let profiles = loadJSON('tripGear.profiles', null);       // [{id,name,createdAt,onboarded}]
@@ -920,8 +1023,13 @@ let currentScreen = 'screen-home';
 let preSettingsScreen = 'screen-home';
 let preSettingsTitle = '';
 
-let settings = loadJSON('tripGear.settings', { sound:'off', theme:'light' });
+let settings = loadJSON('tripGear.settings', { sound:'off', theme:'light', volume:70 });
+if(typeof settings.volume !== 'number') settings.volume = 70;
 function saveSettings(){ saveJSON('tripGear.settings', settings); }
+
+/* ---------- APP VERSION ----------
+   Bump this by 1 with every update pushed to the app. */
+const APP_VERSION = 1;
 
 const BACK_TARGET = {
   'screen-tripmode': 'screen-home',
@@ -1069,10 +1177,10 @@ function selectProfile(id){
   else goHome();
 }
 
-function renameProfile(id){
+async function renameProfile(id){
   const p = profiles.find(pr=>pr.id===id);
   if(!p) return;
-  const n = prompt('שם חדש לפרופיל:', p.name);
+  const n = await openModal({title:'שינוי שם לפרופיל', input:true, value:p.name, okText:'שמירה'});
   if(n && n.trim()){
     p.name = n.trim();
     saveJSON('tripGear.profiles', profiles);
@@ -1109,11 +1217,14 @@ function openSettings(){
   preSettingsTitle = document.getElementById('topbarTitle').textContent;
   applySoundUI();
   applyThemeUI();
+  document.getElementById('appVersionLabel').textContent = APP_VERSION;
   showScreen('screen-settings', 'הגדרות');
 }
 
 function applySoundUI(){
   document.getElementById('soundSwitch').classList.toggle('on', settings.sound === 'on');
+  document.getElementById('volumeRow').style.display = settings.sound === 'on' ? '' : 'none';
+  document.getElementById('volumeSlider').value = settings.volume;
 }
 
 function applyThemeUI(){
@@ -1156,6 +1267,7 @@ window.onYouTubeIframeAPIReady = function(){
     events: {
       onReady: function(){
         ytPlayerReady = true;
+        ytPlayer.setVolume(settings.volume);
         if(ytPendingPlay) ytPlayer.playVideo();
       }
     }
@@ -1181,6 +1293,12 @@ function toggleSound(){
   saveSettings();
   applySoundUI();
   applyMusicPlayback();
+}
+
+function setVolume(val){
+  settings.volume = parseInt(val, 10) || 0;
+  saveSettings();
+  if(ytPlayerReady && ytPlayer) ytPlayer.setVolume(settings.volume);
 }
 
 /* ---------- HOME ---------- */
@@ -1489,10 +1607,10 @@ function resetPacked(){
   syncPackedToFirestore(trip);
 }
 
-function renameTrip(tripId){
+async function renameTrip(tripId){
   const trip = currentData().trips.find(t=>t.id===tripId);
   if(!trip) return;
-  const newName = prompt('שם חדש לטיול:', trip.name);
+  const newName = await openModal({title:'שינוי שם לטיול', input:true, value:trip.name, okText:'שמירה'});
   if(newName && newName.trim()){
     trip.name = newName.trim();
     saveData();
@@ -1553,7 +1671,7 @@ async function shareTrip(tripId){
   const trip = currentData().trips.find(t=>t.id===tripId);
   if(!trip) return;
   if(trip.shared && trip.shareCode){
-    prompt('קוד השיתוף של הטיול הזה (העתק ושלח לחברים):', trip.shareCode);
+    await openModal({title:'קוד השיתוף', message:'שלח את הקוד הזה לחברים:', code:trip.shareCode, showCancel:false, okText:'סגירה'});
     return;
   }
   if(!window.__fb){
@@ -1573,7 +1691,7 @@ async function shareTrip(tripId){
     saveData();
     attachShareListener(tripId);
     renderList(tripId);
-    prompt('הטיול שותף בהצלחה! שלח את הקוד הזה לחברים שיצטרפו (מ"הטיולים שלי" → "הצטרפות עם קוד"):', code);
+    await openModal({title:'הטיול שותף בהצלחה!', message:'שלח את הקוד הזה לחברים שיצטרפו (מ"הטיולים שלי" → "הצטרפות עם קוד"):', code, showCancel:false, okText:'סגירה'});
   }catch(e){
     console.error(e);
     alert('משהו השתבש בשיתוף הטיול. נסה שוב.');
@@ -1585,7 +1703,7 @@ async function joinSharedTrip(){
     alert('החיבור לשיתוף עדיין נטען, נסה שוב בעוד רגע.');
     return;
   }
-  const raw = prompt('הזן את קוד השיתוף שקיבלת מחבר:');
+  const raw = await openModal({title:'הצטרפות עם קוד', message:'הזן את קוד השיתוף שקיבלת מחבר:', input:true, okText:'הצטרפות'});
   if(!raw) return;
   const code = raw.trim().toUpperCase();
   const existing = currentData().trips.find(t=>t.shareCode === code);
