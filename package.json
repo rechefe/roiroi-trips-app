@@ -1,0 +1,8 @@
+{
+  "name": "trip-gear-planner",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vercel/postgres": "^0.10.0"
+  }
+}
