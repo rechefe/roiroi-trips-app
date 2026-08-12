@@ -1,5 +1,15 @@
 // Basic offline app-shell cache for מתכנן ציוד לטיולים
-const CACHE_NAME = 'trip-gear-cache-v2';
+//
+// Strategy:
+// - App shell (the HTML page + manifest): network-first. Always try to fetch the
+//   latest deploy when online; only fall back to the cached copy when offline.
+//   This is what makes new deployments show up without users needing to manually
+//   clear their cache.
+// - /api/* : never touched by the service worker at all - trip data must always
+//   come straight from the network, never from a stale cached response.
+// - Static assets (icons, background images): cache-first, since they rarely
+//   change and this keeps the app fast / usable offline.
+const CACHE_NAME = 'trip-gear-cache-v3';
 const APP_SHELL = [
   './trip-gear-planner.html',
   './manifest.json',
@@ -31,8 +41,29 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
 
-  // Never intercept the YouTube embed / third-party APIs - always go to network
-  if (req.url.includes('youtube.com') || req.url.includes('firebaseio.com') || req.url.includes('googleapis.com/identitytoolkit') || req.url.includes('firestore.googleapis.com')) {
+  const url = new URL(req.url);
+
+  // Never intercept third-party embeds - always go straight to network
+  if (url.hostname.includes('youtube.com')) return;
+
+  // Never cache API calls - trip data (shared trips, packed state, polling) must
+  // always be live, never a stale cached response.
+  if (url.origin === self.location.origin && url.pathname.startsWith('/api/')) return;
+
+  const isAppShellDoc = req.mode === 'navigate' || url.pathname.endsWith('/manifest.json');
+
+  if (isAppShellDoc) {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res && res.status === 200) {
+            const resClone = res.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone)).catch(() => {});
+          }
+          return res;
+        })
+        .catch(() => caches.match(req).then((cached) => cached || caches.match('./trip-gear-planner.html')))
+    );
     return;
   }
 

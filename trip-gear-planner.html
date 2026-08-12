@@ -595,9 +595,13 @@
     <div class="modal-title" id="modalTitle" style="display:none;"></div>
     <div class="modal-message" id="modalMessage" style="display:none;"></div>
     <input type="text" class="text-input" id="modalInput" style="display:none;">
+    <div class="modal-code-row" id="modalLinkRow" style="display:none;">
+      <input type="text" class="text-input" id="modalLinkText" readonly style="margin:0;font-size:.8rem;" onclick="this.select()">
+      <button class="btn-secondary" id="modalLinkBtn" type="button" onclick="copyOrShareModalLink()">שיתוף</button>
+    </div>
     <div class="modal-code-row" id="modalCodeRow" style="display:none;">
       <div class="modal-code" id="modalCodeText"></div>
-      <button class="btn-secondary" id="modalCopyBtn" type="button" onclick="copyModalCode()">העתק</button>
+      <button class="btn-secondary" id="modalCopyBtn" type="button" onclick="copyModalCode()">העתק קוד</button>
     </div>
     <div class="modal-actions">
       <button class="btn-secondary" id="modalCancelBtn" type="button" onclick="closeModal(null)">ביטול</button>
@@ -932,7 +936,7 @@ function saveJSON(key, val){
 
 let modalResolver = null;
 
-function openModal({title='', message='', input=false, value='', code=null, okText='אישור', cancelText='ביטול', showCancel=true} = {}){
+function openModal({title='', message='', input=false, value='', code=null, link=null, okText='אישור', cancelText='ביטול', showCancel=true} = {}){
   return new Promise(resolve=>{
     modalResolver = resolve;
     const titleEl = document.getElementById('modalTitle');
@@ -944,6 +948,8 @@ function openModal({title='', message='', input=false, value='', code=null, okTe
     const inputEl = document.getElementById('modalInput');
     inputEl.style.display = input ? '' : 'none';
     inputEl.value = value || '';
+    document.getElementById('modalLinkRow').style.display = link ? 'flex' : 'none';
+    document.getElementById('modalLinkText').value = link || '';
     document.getElementById('modalCodeRow').style.display = code ? 'flex' : 'none';
     document.getElementById('modalCodeText').textContent = code || '';
     document.getElementById('modalOkBtn').textContent = okText;
@@ -971,6 +977,22 @@ function copyModalCode(){
   if(!navigator.clipboard || !navigator.clipboard.writeText) return;
   navigator.clipboard.writeText(text).then(()=>{
     const btn = document.getElementById('modalCopyBtn');
+    const orig = btn.textContent;
+    btn.textContent = 'הועתק ✓';
+    setTimeout(()=>{ btn.textContent = orig; }, 1500);
+  }).catch(()=>{});
+}
+
+function copyOrShareModalLink(){
+  const link = document.getElementById('modalLinkText').value;
+  if(!link) return;
+  if(navigator.share){
+    navigator.share({ title:'טיול משותף', text:'הצטרפו לטיול שלי:', url:link }).catch(()=>{});
+    return;
+  }
+  if(!navigator.clipboard || !navigator.clipboard.writeText) return;
+  navigator.clipboard.writeText(link).then(()=>{
+    const btn = document.getElementById('modalLinkBtn');
     const orig = btn.textContent;
     btn.textContent = 'הועתק ✓';
     setTimeout(()=>{ btn.textContent = orig; }, 1500);
@@ -1010,7 +1032,61 @@ function currentData(){
   if(!allData[activeProfileId]) allData[activeProfileId] = {inventory:{}, custom:{}, trips:[]};
   return allData[activeProfileId];
 }
-function saveData(){ saveJSON('tripGear.data', allData); }
+function saveData(){
+  saveJSON('tripGear.data', allData);
+  scheduleAccountSync();
+}
+
+/* ---------- ACCOUNT SYNC (server-backed, keyed by username) ----------
+   localStorage stays as the fast/offline-first cache, but inventory + trips
+   are mirrored to the database under the profile's (lowercased) name, so
+   switching devices or clearing browser data doesn't lose anything - only the
+   profile name itself needs to be "remembered" to pull everything back. */
+
+function usernameKey(name){
+  return (name || '').trim().toLowerCase();
+}
+
+let accountSyncTimer = null;
+function scheduleAccountSync(){
+  if(accountSyncTimer) clearTimeout(accountSyncTimer);
+  accountSyncTimer = setTimeout(pushAccountToServer, 900);
+}
+
+async function pushAccountToServer(){
+  const p = activeProfile();
+  const username = p && usernameKey(p.name);
+  if(!username) return;
+  const data = currentData();
+  try{
+    await fetch(`/api/account/${encodeURIComponent(username)}`, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ inventory: data.inventory, custom: data.custom, trips: data.trips })
+    });
+  }catch(e){ /* offline / server unavailable - local copy is still safe */ }
+}
+
+async function pullAccountFromServer(profileId, username){
+  if(!username) return;
+  try{
+    const res = await fetch(`/api/account/${encodeURIComponent(username)}`);
+    if(!res.ok) return;
+    const remote = await res.json();
+    const local = allData[profileId] || {inventory:{}, custom:{}, trips:[]};
+    // Server wins for inventory/custom and any trip it already knows about; trips
+    // that only exist locally (e.g. created seconds ago, not synced yet) are kept.
+    const remoteTripIds = new Set((remote.trips || []).map(t=>t.id));
+    const onlyLocal = (local.trips || []).filter(t=>!remoteTripIds.has(t.id));
+    allData[profileId] = {
+      inventory: remote.inventory || {},
+      custom: remote.custom || {},
+      trips: [...(remote.trips || []), ...onlyLocal]
+    };
+    saveJSON('tripGear.data', allData);
+  }catch(e){ /* offline - keep working from local cache */ }
+  scheduleAccountSync(); // push back so any local-only additions get backed up too
+}
 
 /* ---------- APP NAV STATE ---------- */
 
@@ -1042,7 +1118,7 @@ const BACK_TARGET = {
 /* ---------- SCREEN NAVIGATION ---------- */
 
 function showScreen(id, title){
-  if(id !== 'screen-list' && typeof detachShareListener === 'function') detachShareListener();
+  if(id !== 'screen-list') stopShareSync();
   if(id !== 'screen-list'){
     const nav = document.getElementById('sectionQuickNav');
     if(nav) nav.style.display = 'none';
@@ -1112,6 +1188,12 @@ function initApp(){
     saveJSON('tripGear.activeProfileId', activeProfileId);
   }
   const p = activeProfile();
+  // Launch instantly from the local cache, then reconcile with the database
+  // in the background (and re-render if the user is still on an affected screen).
+  pullAccountFromServer(p.id, usernameKey(p.name)).then(()=>{
+    if(currentScreen === 'screen-home') renderHome();
+    if(currentScreen === 'screen-mytrips') renderMyTrips();
+  });
   if(!p.onboarded){
     openInventory('onboarding');
   } else {
@@ -1126,6 +1208,7 @@ function submitOnboardingName(){
   activeProfileId = p.id;
   saveJSON('tripGear.profiles', profiles);
   saveJSON('tripGear.activeProfileId', activeProfileId);
+  pullAccountFromServer(p.id, usernameKey(p.name)); // in case this name already has data from another device
   openInventory('onboarding');
 }
 
@@ -1169,10 +1252,11 @@ function renderProfiles(){
   });
 }
 
-function selectProfile(id){
+async function selectProfile(id){
   activeProfileId = id;
   saveJSON('tripGear.activeProfileId', activeProfileId);
   const p = activeProfile();
+  await pullAccountFromServer(id, usernameKey(p.name));
   if(!p.onboarded) openInventory('onboarding');
   else goHome();
 }
@@ -1465,7 +1549,7 @@ function renderList(tripId){
   const trip = currentData().trips.find(t=>t.id===tripId);
   if(!trip){ goHome(); return; }
   if(!trip.personalPacked) trip.personalPacked = {};
-  if(trip.shared) attachShareListener(tripId); else detachShareListener();
+  if(trip.shared) startShareSync(tripId); else stopShareSync();
 
   const tags = tagsFromAnswers(trip.answers);
   const inv = currentData().inventory;
@@ -1584,10 +1668,10 @@ function togglePacked(id, checked){
   if(checked) trip.packed[id] = true; else delete trip.packed[id];
   saveData();
   renderList(currentTripId);
-  syncPackedToFirestore(trip);
+  syncPackedToServer(trip);
 }
 
-// Personal gear on a group trip: local only, never synced to Firestore (private per participant)
+// Personal gear on a group trip: local only, never synced to the server (private per participant)
 function togglePersonalPacked(id, checked){
   const trip = currentData().trips.find(t=>t.id===currentTripId);
   if(!trip) return;
@@ -1604,7 +1688,7 @@ function resetPacked(){
   trip.personalPacked = {};
   saveData();
   renderList(currentTripId);
-  syncPackedToFirestore(trip);
+  syncPackedToServer(trip);
 }
 
 async function renameTrip(tripId){
@@ -1616,126 +1700,145 @@ async function renameTrip(tripId){
     saveData();
     renderList(tripId);
     document.getElementById('topbarTitle').textContent = trip.name;
-    if(trip.shared && trip.shareCode && window.__fb){
-      window.__fb.updateDoc(window.__fb.doc(window.__fb.db, 'trips', trip.shareCode), { name: trip.name }).catch(()=>{});
+    if(trip.shared && trip.shareCode){
+      fetch(`/api/trips/${encodeURIComponent(trip.shareCode)}`, {
+        method:'PATCH',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ name: trip.name })
+      }).catch(()=>{});
     }
   }
 }
 
-/* ---------- SHARED TRIPS (Firebase) ---------- */
+/* ---------- SHARED TRIPS (server-backed via /api/trips, Postgres) ---------- */
 
-let activeShareUnsub = null;
+let shareSyncTimer = null;
 
-function detachShareListener(){
-  if(activeShareUnsub){ activeShareUnsub(); activeShareUnsub = null; }
+function stopShareSync(){
+  if(shareSyncTimer){ clearInterval(shareSyncTimer); shareSyncTimer = null; }
 }
 
-function attachShareListener(tripId){
-  detachShareListener();
+function startShareSync(tripId){
+  stopShareSync();
   const trip = currentData().trips.find(t=>t.id===tripId);
-  if(!trip || !trip.shared || !trip.shareCode || !window.__fb) return;
-  activeShareUnsub = window.__fb.onSnapshot(
-    window.__fb.doc(window.__fb.db, 'trips', trip.shareCode),
-    (snap)=>{
-      if(!snap.exists()) return;
-      const data = snap.data();
-      const t = currentData().trips.find(t=>t.id===tripId);
-      if(!t) return;
-      t.packed = data.packed || {};
-      if(data.name) t.name = data.name;
-      saveData();
-      if(currentTripId === tripId && currentScreen === 'screen-list'){
-        renderList(tripId);
-      }
-    },
-    ()=>{ /* ignore listener errors (e.g. offline) */ }
-  );
+  if(!trip || !trip.shared || !trip.shareCode) return;
+  shareSyncTimer = setInterval(async ()=>{
+    const data = await fetchTripByCode(trip.shareCode);
+    if(!data) return;
+    const t = currentData().trips.find(t=>t.id===tripId);
+    if(!t) return;
+    t.packed = data.packed || {};
+    if(data.name) t.name = data.name;
+    saveData();
+    if(currentTripId === tripId && currentScreen === 'screen-list'){
+      renderList(tripId);
+    }
+  }, 6000); // simple polling: keeps everyone's checkboxes in sync without a live-socket server
 }
 
-function syncPackedToFirestore(trip){
-  if(!trip.shared || !trip.shareCode || !window.__fb) return;
-  window.__fb.updateDoc(window.__fb.doc(window.__fb.db, 'trips', trip.shareCode), {
-    packed: trip.packed,
-    updatedAt: window.__fb.serverTimestamp()
+function syncPackedToServer(trip){
+  if(!trip.shared || !trip.shareCode) return;
+  fetch(`/api/trips/${encodeURIComponent(trip.shareCode)}`, {
+    method:'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ packed: trip.packed })
   }).catch(()=>{});
 }
 
-function generateShareCode(){
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous chars (0/O, 1/I)
-  let code = '';
-  for(let i=0;i<6;i++) code += chars[Math.floor(Math.random()*chars.length)];
-  return code;
+async function fetchTripByCode(code){
+  try{
+    const res = await fetch(`/api/trips/${encodeURIComponent(code)}`);
+    if(!res.ok) return null;
+    return await res.json();
+  }catch(e){
+    return null;
+  }
+}
+
+function shareLinkFor(code){
+  return `${location.origin}${location.pathname}?trip=${code}`;
+}
+
+function extractCodeFromInput(raw){
+  raw = (raw || '').trim();
+  try{
+    const url = new URL(raw);
+    const fromUrl = url.searchParams.get('trip');
+    if(fromUrl) return fromUrl.toUpperCase();
+  }catch(e){ /* not a URL, treat as a plain code */ }
+  return raw.toUpperCase();
+}
+
+async function showShareModal(code, justCreated){
+  await openModal({
+    title: justCreated ? 'הטיול שותף בהצלחה!' : 'קוד השיתוף',
+    message: 'שלחו לחברים את הקישור (או את הקוד) כדי שיצטרפו לטיול:',
+    code,
+    link: shareLinkFor(code),
+    showCancel:false,
+    okText:'סגירה'
+  });
 }
 
 async function shareTrip(tripId){
   const trip = currentData().trips.find(t=>t.id===tripId);
   if(!trip) return;
   if(trip.shared && trip.shareCode){
-    await openModal({title:'קוד השיתוף', message:'שלח את הקוד הזה לחברים:', code:trip.shareCode, showCancel:false, okText:'סגירה'});
+    await showShareModal(trip.shareCode, false);
     return;
   }
-  if(!window.__fb){
-    alert('החיבור לשיתוף עדיין נטען, נסה שוב בעוד רגע.');
-    return;
-  }
-  const code = generateShareCode();
   try{
-    await window.__fb.setDoc(window.__fb.doc(window.__fb.db, 'trips', code), {
-      name: trip.name,
-      answers: trip.answers,
-      packed: trip.packed || {},
-      updatedAt: window.__fb.serverTimestamp()
+    const res = await fetch('/api/trips', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ name: trip.name, answers: trip.answers, packed: trip.packed || {} })
     });
+    if(!res.ok) throw new Error('share failed');
+    const { code } = await res.json();
     trip.shared = true;
     trip.shareCode = code;
     saveData();
-    attachShareListener(tripId);
+    startShareSync(tripId);
     renderList(tripId);
-    await openModal({title:'הטיול שותף בהצלחה!', message:'שלח את הקוד הזה לחברים שיצטרפו (מ"הטיולים שלי" → "הצטרפות עם קוד"):', code, showCancel:false, okText:'סגירה'});
+    await showShareModal(code, true);
   }catch(e){
     console.error(e);
     alert('משהו השתבש בשיתוף הטיול. נסה שוב.');
   }
 }
 
-async function joinSharedTrip(){
-  if(!window.__fb){
-    alert('החיבור לשיתוף עדיין נטען, נסה שוב בעוד רגע.');
-    return;
-  }
-  const raw = await openModal({title:'הצטרפות עם קוד', message:'הזן את קוד השיתוף שקיבלת מחבר:', input:true, okText:'הצטרפות'});
-  if(!raw) return;
-  const code = raw.trim().toUpperCase();
+async function joinTripByCode(code){
+  code = extractCodeFromInput(code);
+  if(!code) return false;
   const existing = currentData().trips.find(t=>t.shareCode === code);
   if(existing){
     openSavedTrip(existing.id);
-    return;
+    return true;
   }
-  try{
-    const snap = await window.__fb.getDoc(window.__fb.doc(window.__fb.db, 'trips', code));
-    if(!snap.exists()){
-      alert('לא נמצא טיול עם הקוד הזה. בדוק שהקוד הוזן נכון.');
-      return;
-    }
-    const data = snap.data();
-    const trip = {
-      id: 'trip_' + Date.now(),
-      name: data.name || 'טיול משותף',
-      createdAt: Date.now(),
-      answers: data.answers,
-      packed: data.packed || {},
-      personalPacked: {},
-      shared: true,
-      shareCode: code
-    };
-    currentData().trips.unshift(trip);
-    saveData();
-    renderMyTrips();
-    openSavedTrip(trip.id);
-  }catch(e){
-    console.error(e);
-    alert('משהו השתבש בהצטרפות לטיול. נסה שוב.');
-  }
+  const data = await fetchTripByCode(code);
+  if(!data) return false;
+  const trip = {
+    id: 'trip_' + Date.now(),
+    name: data.name || 'טיול משותף',
+    createdAt: Date.now(),
+    answers: data.answers,
+    packed: data.packed || {},
+    personalPacked: {},
+    shared: true,
+    shareCode: code
+  };
+  currentData().trips.unshift(trip);
+  saveData();
+  renderMyTrips();
+  openSavedTrip(trip.id);
+  return true;
+}
+
+async function joinSharedTrip(){
+  const raw = await openModal({title:'הצטרפות עם קוד', message:'הזן את קוד השיתוף או הדבק את הקישור שקיבלת מחבר:', input:true, okText:'הצטרפות'});
+  if(!raw) return;
+  const ok = await joinTripByCode(raw);
+  if(!ok) alert('לא נמצא טיול עם הקוד הזה. בדוק שהקוד הוזן נכון.');
 }
 
 /* ---------- MY TRIPS ---------- */
@@ -1910,8 +2013,24 @@ function removeCustom(catId, itemId){
 
 /* ---------- INIT ---------- */
 
+function checkShareLinkOnLoad(){
+  const params = new URLSearchParams(location.search);
+  const code = params.get('trip');
+  if(!code) return;
+  history.replaceState({}, '', location.origin + location.pathname); // strip ?trip= so refresh/back doesn't re-trigger
+  setTimeout(async ()=>{
+    if(!activeProfileId || !activeProfile()){
+      alert('צור פרופיל תחילה, ואז הצטרף לטיול המשותף מ"הטיולים שלי" עם הקוד מהקישור.');
+      return;
+    }
+    const ok = await joinTripByCode(code);
+    if(!ok) alert('לא נמצא טיול עם הקישור הזה. ייתכן שהוא לא תקין.');
+  }, 300);
+}
+
 document.body.classList.toggle('theme-dark', settings.theme === 'dark');
 initApp();
+checkShareLinkOnLoad();
 applyMusicPlayback(); // best-effort; browsers may block until a real user gesture (the sound toggle) fires
 
 // PWA: register service worker for offline app-shell caching (only works when hosted over https, not on a local file:// open)
@@ -1919,33 +2038,16 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   });
+  // When a new service worker takes over (i.e. a new deployment was picked up),
+  // reload once so the page actually shows the new version instead of staying
+  // on the old cached one until the user manually refreshes.
+  let swRefreshedOnce = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (swRefreshedOnce) return;
+    swRefreshedOnce = true;
+    location.reload();
+  });
 }
-</script>
-
-<!-- Firebase bridge: exposes db + firestore helpers on window.__fb for the classic script above to use -->
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
-  import {
-    getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, serverTimestamp
-  } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
-
-  const firebaseConfig = {
-    apiKey: "AIzaSyCk5pfed7uLUWRPT8291ipBtG_-Bl49tFE",
-    authDomain: "chiud-letiulim.firebaseapp.com",
-    projectId: "chiud-letiulim",
-    storageBucket: "chiud-letiulim.firebasestorage.app",
-    messagingSenderId: "1081766075380",
-    appId: "1:1081766075380:web:3bfa5adde012e537f137a1",
-    measurementId: "G-HD2B43Z637"
-  };
-
-  try{
-    const fbApp = initializeApp(firebaseConfig);
-    const db = getFirestore(fbApp);
-    window.__fb = { db, doc, setDoc, getDoc, updateDoc, onSnapshot, serverTimestamp };
-  }catch(e){
-    console.error('Firebase init failed', e);
-  }
 </script>
 
 </body>

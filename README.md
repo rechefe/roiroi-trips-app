@@ -1,24 +1,52 @@
 # מתכנן ציוד לטיולים (Trip Gear Planner)
 
-A static PWA for building gear checklists for trips in Israel, managing gear inventory and saved trips. Data syncs via Firebase Firestore.
+A PWA for building gear checklists for trips in Israel, managing gear inventory and saved trips.
+
+- `localStorage` is only a fast, offline-first **cache** now — the only thing that has to survive on-device is the profile name you type in. Everything else (inventory, custom items, and every trip you own or joined) is mirrored to a **Vercel Postgres** database keyed by that name (lowercased), so switching devices or clearing browser data restores it all. There's no password — this is a low-friction identifier, the same trust model as the trip share codes below, not an account system.
+- Trips a user explicitly **shares** with friends additionally get a random 6-character code and live in their own `trips` table row, polled every few seconds so everyone's checked/unchecked items stay in sync. Sharing produces a real clickable link (`?trip=CODE`) that auto-joins the trip when opened, in addition to the manually-typed code.
 
 ## Structure
 
-- `trip-gear-planner.html` — the app (single-page, no build step)
+- `trip-gear-planner.html` — the app (single-page frontend)
+- `api/trips/index.js` — `POST` creates a shared trip, returns its code
+- `api/trips/[code].js` — `GET` fetches a shared trip, `PATCH` updates its packed state / name
+- `api/_db.js` — DB helpers for the shared-trip live-sync table (table creation, code generation)
+- `api/account/[username].js` — `GET`/`PUT` a profile's full snapshot (inventory, custom items, all trips), keyed by lowercased profile name
+- `api/_account_db.js` — DB helpers for the `accounts` / `user_trips` tables
 - `manifest.json` — PWA manifest
-- `sw.js` — service worker (offline app-shell cache)
+- `sw.js` — service worker (offline app-shell cache; network-first for the HTML so new deployments show up immediately, and `/api/*` is never cached)
 - `assets/` — icons and background images
+
+## Database setup (one-time)
+
+The app expects a Postgres database connected via Vercel's storage integration:
+
+1. In the Vercel dashboard, open this project → **Storage** tab → **Create Database** → **Postgres** (Neon).
+2. Connect it to the project — Vercel automatically injects the `POSTGRES_URL` (and related) environment variables into all environments (Production/Preview/Development).
+3. Redeploy. All tables (`trips`, `accounts`, `user_trips`) are created automatically on first API call (`CREATE TABLE IF NOT EXISTS`) — no manual migration needed.
+
+Known limitation: renaming a profile changes its sync key (the name *is* the username), so data won't follow a rename to the new name automatically.
 
 ## Local preview
 
-No build step is required. Serve the folder with any static file server, e.g.:
+Install dependencies once (needed for the `/api` functions):
 
 ```bash
-npx serve .
+npm install
+```
+
+Run with the Vercel CLI so both the static page and the `/api` serverless functions work, and pull the database env vars down locally:
+
+```bash
+npx vercel link   # first time only, links this folder to the Vercel project
+npx vercel env pull .env.local
+npx vercel dev
 ```
 
 Then open `http://localhost:3000/`.
 
+(Serving the folder with a plain static server like `npx serve .` still works for UI-only changes, but trip sharing/joining needs the API routes and won't function without `vercel dev`.)
+
 ## Deployment
 
-This project is a static site and deploys as-is on [Vercel](https://vercel.com). See the deployment guide provided with this project for step-by-step instructions.
+This project deploys on [Vercel](https://vercel.com), combining the static page with the `/api` serverless functions and the connected Postgres database. Push to the deployed branch and Vercel builds/deploys automatically.
