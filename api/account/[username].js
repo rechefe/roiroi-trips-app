@@ -13,7 +13,7 @@ export default async function handler(req, res) {
         SELECT inventory, custom FROM accounts WHERE username = ${username}
       `;
       const tripsRes = await sql`
-        SELECT id, name, answers, packed, personal_packed, shared, share_code, created_at
+        SELECT id, name, answers, packed, personal_packed, shared, share_code, participants, created_at
         FROM user_trips WHERE username = ${username}
         ORDER BY created_at DESC
       `;
@@ -41,13 +41,14 @@ export default async function handler(req, res) {
       for (const t of incomingTrips) {
         if (!t || !t.id || !t.name) continue;
         await sql`
-          INSERT INTO user_trips (username, id, name, answers, packed, personal_packed, shared, share_code, updated_at)
+          INSERT INTO user_trips (username, id, name, answers, packed, personal_packed, shared, share_code, participants, updated_at)
           VALUES (
             ${username}, ${t.id}, ${t.name},
             ${JSON.stringify(t.answers || {})}::jsonb,
             ${JSON.stringify(t.packed || {})}::jsonb,
             ${JSON.stringify(t.personalPacked || {})}::jsonb,
-            ${!!t.shared}, ${t.shareCode || null}, now()
+            ${!!t.shared}, ${t.shareCode || null},
+            ${JSON.stringify(t.participants || [])}::jsonb, now()
           )
           ON CONFLICT (username, id) DO UPDATE SET
             name = EXCLUDED.name,
@@ -56,6 +57,7 @@ export default async function handler(req, res) {
             personal_packed = EXCLUDED.personal_packed,
             shared = EXCLUDED.shared,
             share_code = EXCLUDED.share_code,
+            participants = EXCLUDED.participants,
             updated_at = now()
         `;
       }

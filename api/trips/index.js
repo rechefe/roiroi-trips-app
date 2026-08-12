@@ -1,5 +1,6 @@
 import { sql } from '@vercel/postgres';
 import { ensureTripsTable, generateCode } from '../_db.js';
+import { normalizeUsername } from '../_account_db.js';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -7,10 +8,12 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { name, answers, packed } = req.body || {};
+  const { name, answers, packed, username } = req.body || {};
   if (!name || !answers) {
     return res.status(400).json({ error: 'Missing name or answers' });
   }
+  const creator = normalizeUsername(username);
+  const participants = creator ? [creator] : [];
 
   try {
     await ensureTripsTable();
@@ -19,10 +22,10 @@ export default async function handler(req, res) {
       const code = generateCode();
       try {
         await sql`
-          INSERT INTO trips (code, name, answers, packed)
-          VALUES (${code}, ${name}, ${JSON.stringify(answers)}::jsonb, ${JSON.stringify(packed || {})}::jsonb)
+          INSERT INTO trips (code, name, answers, packed, participants)
+          VALUES (${code}, ${name}, ${JSON.stringify(answers)}::jsonb, ${JSON.stringify(packed || {})}::jsonb, ${JSON.stringify(participants)}::jsonb)
         `;
-        return res.status(201).json({ code });
+        return res.status(201).json({ code, participants });
       } catch (e) {
         if (e && e.code === '23505') continue; // code collision, retry with a new one
         throw e;

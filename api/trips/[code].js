@@ -10,7 +10,7 @@ export default async function handler(req, res) {
 
     if (req.method === 'GET') {
       const { rows } = await sql`
-        SELECT name, answers, packed, updated_at FROM trips WHERE code = ${code}
+        SELECT name, answers, packed, participants, updated_at FROM trips WHERE code = ${code}
       `;
       if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
       return res.status(200).json(rows[0]);
@@ -24,7 +24,7 @@ export default async function handler(req, res) {
             packed = COALESCE(${packed ? JSON.stringify(packed) : null}::jsonb, packed),
             updated_at = now()
         WHERE code = ${code}
-        RETURNING name, answers, packed, updated_at
+        RETURNING name, answers, packed, participants, updated_at
       `;
       if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
       return res.status(200).json(rows[0]);

@@ -318,6 +318,21 @@
   }
   .item-row label{flex:1;font-size:.93rem;cursor:pointer;}
   .item-row.packed label{color:var(--muted);text-decoration:line-through;}
+  .item-row.locked{opacity:.75;}
+  .item-row.locked input[type=checkbox]{cursor:not-allowed;}
+  .item-row.locked label{cursor:default;}
+  .claimed-by{
+    display:inline-block;
+    font-size:.72rem;
+    font-weight:700;
+    color:var(--brand-dark);
+    margin-inline-start:6px;
+  }
+  .participants-line{
+    margin:0 0 10px;
+    font-size:.85rem;
+    color:var(--muted);
+  }
   .badge{
     font-size:.72rem;
     padding:3px 9px;
@@ -931,6 +946,14 @@ function saveJSON(key, val){
   try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){}
 }
 
+// Trips can display usernames/text that came from someone else's device (shared
+// trips, participant lists), so anything derived from them must be escaped.
+function escapeHtml(str){
+  return String(str == null ? '' : str).replace(/[&<>"']/g, c=>({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[c]));
+}
+
 /* ---------- MODAL (Promise-based replacement for window.prompt/alert,
    which installed/standalone PWAs on iOS silently block) ---------- */
 
@@ -1105,7 +1128,7 @@ function saveSettings(){ saveJSON('tripGear.settings', settings); }
 
 /* ---------- APP VERSION ----------
    Bump this by 1 with every update pushed to the app. */
-const APP_VERSION = 1;
+const APP_VERSION = 2;
 
 const BACK_TARGET = {
   'screen-tripmode': 'screen-home',
@@ -1519,28 +1542,33 @@ function allItemsForCategory(catId){
 
 /* ---------- TRIP LIST ---------- */
 
-function renderItemRow(it, packedMap, toggleFnName, inv){
-  const isPacked = !!packedMap[it.id];
+function renderItemRow(it, packedMap, toggleFnName, inv, opts){
+  opts = opts || {};
+  const raw = packedMap[it.id];
+  const isPacked = !!raw;
+  // On shared trips a packed entry is {by, at}; locally-only entries are just `true`.
+  const claimedBy = (opts.shared && raw && typeof raw === 'object') ? raw.by : null;
+  const lockedByOther = !!(claimedBy && claimedBy !== opts.username);
   const owned = !!inv[it.id];
   const row = document.createElement('div');
-  row.className = 'item-row' + (isPacked?' packed':'');
+  row.className = 'item-row' + (isPacked?' packed':'') + (lockedByOther?' locked':'');
   row.innerHTML = `
-    <input type="checkbox" ${isPacked?'checked':''} onchange="${toggleFnName}('${it.id}', this.checked)">
-    <label onclick="event.preventDefault(); document.getElementById('chk_${toggleFnName}_${it.id}')?.click();">${displayItemName(it, inv)}</label>
+    <input type="checkbox" ${isPacked?'checked':''} ${lockedByOther?'disabled':''} onchange="${toggleFnName}('${it.id}', this.checked)">
+    <label onclick="event.preventDefault(); document.getElementById('chk_${toggleFnName}_${it.id}')?.click();">${displayItemName(it, inv)}${lockedByOther ? `<span class="claimed-by">✓ ${escapeHtml(claimedBy)}</span>` : ''}</label>
     <span class="badge ${owned?'have':'need'}">${owned?'יש לי':'צריך להשיג'}</span>
   `;
   row.querySelector('input').id = 'chk_' + toggleFnName + '_' + it.id;
   return row;
 }
 
-function renderCategoryBlock(cat, items, packedMap, toggleFnName, inv){
+function renderCategoryBlock(cat, items, packedMap, toggleFnName, inv, opts){
   if(items.length===0) return null;
   const block = document.createElement('div');
   block.className = 'card category-block';
   const h3 = document.createElement('h3');
   h3.innerHTML = `<span>${cat.icon}</span> ${cat.name}`;
   block.appendChild(h3);
-  items.forEach(it=>block.appendChild(renderItemRow(it, packedMap, toggleFnName, inv)));
+  items.forEach(it=>block.appendChild(renderItemRow(it, packedMap, toggleFnName, inv, opts)));
   return block;
 }
 
@@ -1560,6 +1588,9 @@ function renderList(tripId){
   const isGroup = a.tripMode === 'group';
   const litersPerDay = waterLitersPerDay(a);
   const dayCount = a.duration==='day' ? 1 : (a.duration==='short' ? '2–3' : '4+');
+  const username = usernameKey((activeProfile() || {}).name);
+  const jointOpts = { shared: !!trip.shared, username };
+  const participants = trip.participants || [];
 
   const totalWrap = document.createElement('div');
   totalWrap.className = 'card no-print';
@@ -1571,6 +1602,7 @@ function renderList(tripId){
       ${a.water==='yes'?'עם מקורות מים':'מסלול יבש'} ·
       ${a.season==='summer'?'קיץ':'חורף'}
     </p>
+    ${trip.shared ? `<p class="participants-line">👥 באים: ${participants.length ? participants.map(u=>escapeHtml(u)).join(', ') : '—'}</p>` : ''}
     <p class="water-note">💧 כמות מים מומלצת: כ-${litersPerDay} ליטר לאדם ליום${a.duration!=='day' ? ` (למשך ${dayCount} ימים — תכננו חידוש/סחיבה בהתאם)` : ''}</p>
     <div class="actions-row">
       <button class="btn-secondary" onclick="window.print()">${ICON_PRINT} הדפסה</button>
@@ -1596,7 +1628,7 @@ function renderList(tripId){
     CATEGORIES.forEach(cat=>{
       const items = allItemsForCategory(cat.id).filter(it=> it.tags.some(t=>tags.has(t)) );
       tally(items, trip.packed);
-      const block = renderCategoryBlock(cat, items, trip.packed, 'togglePacked', inv);
+      const block = renderCategoryBlock(cat, items, trip.packed, 'togglePacked', inv, jointOpts);
       if(block) container.appendChild(block);
     });
   } else {
@@ -1625,7 +1657,7 @@ function renderList(tripId){
     CATEGORIES.forEach(cat=>{
       const items = allItemsForCategory(cat.id).filter(it=> it.tags.some(t=>tags.has(t)) && !!it.shared);
       tally(items, trip.packed);
-      const block = renderCategoryBlock(cat, items, trip.packed, 'togglePacked', inv);
+      const block = renderCategoryBlock(cat, items, trip.packed, 'togglePacked', inv, jointOpts);
       if(block) groupSection.appendChild(block);
     });
     container.appendChild(groupSection);
@@ -1662,13 +1694,35 @@ function updateActiveSection(){
 }
 window.addEventListener('scroll', updateActiveSection, { passive: true });
 
-function togglePacked(id, checked){
+async function togglePacked(id, checked){
   const trip = currentData().trips.find(t=>t.id===currentTripId);
   if(!trip) return;
+
+  if(trip.shared && trip.shareCode){
+    // Shared/joint item: claim or release it atomically on the server so two
+    // people can't both "win" the same checkbox at once.
+    const username = usernameKey((activeProfile() || {}).name);
+    const result = await claimSharedItem(trip.shareCode, id, checked, username);
+    if(result){
+      if(result.packed) trip.packed = result.packed;
+      if(result.participants) trip.participants = result.participants;
+      saveData();
+      if(result.conflict){
+        const holder = trip.packed[id] && trip.packed[id].by;
+        alert(checked
+          ? (holder ? `${holder} כבר סימן/ה את הפריט הזה קודם.` : 'הפריט כבר מסומן.')
+          : 'אי אפשר לבטל סימון של פריט שמישהו אחר סימן.');
+      }
+    } else {
+      alert('בעיית חיבור לשרת - נסה שוב.');
+    }
+    renderList(currentTripId);
+    return;
+  }
+
   if(checked) trip.packed[id] = true; else delete trip.packed[id];
   saveData();
   renderList(currentTripId);
-  syncPackedToServer(trip);
 }
 
 // Personal gear on a group trip: local only, never synced to the server (private per participant)
@@ -1728,12 +1782,13 @@ function startShareSync(tripId){
     const t = currentData().trips.find(t=>t.id===tripId);
     if(!t) return;
     t.packed = data.packed || {};
+    t.participants = data.participants || [];
     if(data.name) t.name = data.name;
     saveData();
     if(currentTripId === tripId && currentScreen === 'screen-list'){
       renderList(tripId);
     }
-  }, 6000); // simple polling: keeps everyone's checkboxes in sync without a live-socket server
+  }, 6000); // simple polling: keeps everyone's checkboxes (and who's coming) in sync without a live-socket server
 }
 
 function syncPackedToServer(trip){
@@ -1743,6 +1798,40 @@ function syncPackedToServer(trip){
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ packed: trip.packed })
   }).catch(()=>{});
+}
+
+// Atomically claims (checked=true) or releases (checked=false) one joint item.
+// Returns {packed, participants, conflict:false} on success, the same shape
+// with conflict:true if someone else already holds/released it, or null on a
+// network failure.
+async function claimSharedItem(code, itemId, checked, username){
+  try{
+    const res = await fetch(`/api/trips/${encodeURIComponent(code)}/item`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ itemId, checked, username })
+    });
+    const data = await res.json().catch(()=>null);
+    if(!data) return null;
+    return { packed: data.packed, participants: data.participants, conflict: res.status === 409 };
+  }catch(e){
+    return null;
+  }
+}
+
+async function joinSharedTripOnServer(code, username){
+  if(!code || !username) return null;
+  try{
+    const res = await fetch(`/api/trips/${encodeURIComponent(code)}/join`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ username })
+    });
+    if(!res.ok) return null;
+    return await res.json();
+  }catch(e){
+    return null;
+  }
 }
 
 async function fetchTripByCode(code){
@@ -1787,16 +1876,26 @@ async function shareTrip(tripId){
     await showShareModal(trip.shareCode, false);
     return;
   }
+  const username = usernameKey((activeProfile() || {}).name);
+  // Items already checked before sharing get attributed to whoever's sharing,
+  // so "who's on it" is meaningful from the very first sync.
+  const initialPacked = {};
+  Object.keys(trip.packed || {}).forEach(id=>{
+    const v = trip.packed[id];
+    initialPacked[id] = (v && typeof v === 'object') ? v : { by: username, at: new Date().toISOString() };
+  });
   try{
     const res = await fetch('/api/trips', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ name: trip.name, answers: trip.answers, packed: trip.packed || {} })
+      body: JSON.stringify({ name: trip.name, answers: trip.answers, packed: initialPacked, username })
     });
     if(!res.ok) throw new Error('share failed');
-    const { code } = await res.json();
+    const { code, participants } = await res.json();
     trip.shared = true;
     trip.shareCode = code;
+    trip.packed = initialPacked;
+    trip.participants = participants || (username ? [username] : []);
     saveData();
     startShareSync(tripId);
     renderList(tripId);
@@ -1817,6 +1916,7 @@ async function joinTripByCode(code){
   }
   const data = await fetchTripByCode(code);
   if(!data) return false;
+  const username = usernameKey((activeProfile() || {}).name);
   const trip = {
     id: 'trip_' + Date.now(),
     name: data.name || 'טיול משותף',
@@ -1824,11 +1924,17 @@ async function joinTripByCode(code){
     answers: data.answers,
     packed: data.packed || {},
     personalPacked: {},
+    participants: data.participants || [],
     shared: true,
     shareCode: code
   };
   currentData().trips.unshift(trip);
   saveData();
+  const joined = await joinSharedTripOnServer(code, username);
+  if(joined && joined.participants){
+    trip.participants = joined.participants;
+    saveData();
+  }
   renderMyTrips();
   openSavedTrip(trip.id);
   return true;
@@ -1884,7 +1990,7 @@ function renderMyTrips(){
     card.innerHTML = `
       <div class="trip-info">
         <div class="trip-name">${trip.name} ${trip.shared ? '🔗' : ''}</div>
-        <div class="trip-meta">${dateStr} · ${packedCount}/${total} ארוזים${isGroup ? ' · קבוצתי' : ''}${trip.shared ? ' · משותף' : ''}</div>
+        <div class="trip-meta">${dateStr} · ${packedCount}/${total} ארוזים${isGroup ? ' · קבוצתי' : ''}${trip.shared ? ' · משותף' : ''}${trip.shared && (trip.participants||[]).length ? ` · 👥 ${(trip.participants||[]).map(u=>escapeHtml(u)).join(', ')}` : ''}</div>
       </div>
       <div class="trip-actions">
         <button class="icon-btn" onclick="openSavedTrip('${trip.id}')" title="פתח">${ICON_OPEN} פתיחה</button>
@@ -1898,6 +2004,17 @@ function renderMyTrips(){
 function openSavedTrip(tripId){
   listBackTarget = 'screen-mytrips';
   const trip = currentData().trips.find(t=>t.id===tripId);
+  if(trip && trip.shared && trip.shareCode){
+    // Make sure this device/account is registered as "coming" even if an
+    // earlier join attempt (e.g. right after following a share link) failed.
+    const username = usernameKey((activeProfile() || {}).name);
+    joinSharedTripOnServer(trip.shareCode, username).then(joined=>{
+      if(joined && joined.participants){
+        trip.participants = joined.participants;
+        saveData();
+      }
+    });
+  }
   renderList(tripId);
   showScreen('screen-list', trip ? trip.name : '');
 }

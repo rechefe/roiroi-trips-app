@@ -23,11 +23,14 @@ export async function ensureAccountTables() {
       personal_packed JSONB NOT NULL DEFAULT '{}'::jsonb,
       shared BOOLEAN NOT NULL DEFAULT false,
       share_code TEXT,
+      participants JSONB NOT NULL DEFAULT '[]'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       PRIMARY KEY (username, id)
     )
   `;
+  // Table may already exist from before "participants" was added.
+  await sql`ALTER TABLE user_trips ADD COLUMN IF NOT EXISTS participants JSONB NOT NULL DEFAULT '[]'::jsonb`;
   await sql`CREATE INDEX IF NOT EXISTS user_trips_username_idx ON user_trips (username)`;
   ensured = true;
 }
@@ -48,6 +51,7 @@ export function rowToTrip(row) {
     personalPacked: row.personal_packed || {},
     shared: !!row.shared,
     shareCode: row.share_code || null,
+    participants: row.participants || [],
     createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now()
   };
 }
