@@ -10,10 +10,13 @@ export async function ensureTripsTable() {
       name TEXT NOT NULL,
       answers JSONB NOT NULL,
       packed JSONB NOT NULL DEFAULT '{}'::jsonb,
+      participants JSONB NOT NULL DEFAULT '[]'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `;
+  // Table may already exist from before "participants" was added.
+  await sql`ALTER TABLE trips ADD COLUMN IF NOT EXISTS participants JSONB NOT NULL DEFAULT '[]'::jsonb`;
   ensured = true;
 }
 
