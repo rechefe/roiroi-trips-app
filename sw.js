@@ -9,7 +9,7 @@
 //   come straight from the network, never from a stale cached response.
 // - Static assets (icons, background images): cache-first, since they rarely
 //   change and this keeps the app fast / usable offline.
-const CACHE_NAME = 'trip-gear-cache-v3';
+const CACHE_NAME = 'trip-gear-cache-v4';
 const APP_SHELL = [
   './trip-gear-planner.html',
   './manifest.json',
