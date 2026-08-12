@@ -1032,7 +1032,61 @@ function currentData(){
   if(!allData[activeProfileId]) allData[activeProfileId] = {inventory:{}, custom:{}, trips:[]};
   return allData[activeProfileId];
 }
-function saveData(){ saveJSON('tripGear.data', allData); }
+function saveData(){
+  saveJSON('tripGear.data', allData);
+  scheduleAccountSync();
+}
+
+/* ---------- ACCOUNT SYNC (server-backed, keyed by username) ----------
+   localStorage stays as the fast/offline-first cache, but inventory + trips
+   are mirrored to the database under the profile's (lowercased) name, so
+   switching devices or clearing browser data doesn't lose anything - only the
+   profile name itself needs to be "remembered" to pull everything back. */
+
+function usernameKey(name){
+  return (name || '').trim().toLowerCase();
+}
+
+let accountSyncTimer = null;
+function scheduleAccountSync(){
+  if(accountSyncTimer) clearTimeout(accountSyncTimer);
+  accountSyncTimer = setTimeout(pushAccountToServer, 900);
+}
+
+async function pushAccountToServer(){
+  const p = activeProfile();
+  const username = p && usernameKey(p.name);
+  if(!username) return;
+  const data = currentData();
+  try{
+    await fetch(`/api/account/${encodeURIComponent(username)}`, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ inventory: data.inventory, custom: data.custom, trips: data.trips })
+    });
+  }catch(e){ /* offline / server unavailable - local copy is still safe */ }
+}
+
+async function pullAccountFromServer(profileId, username){
+  if(!username) return;
+  try{
+    const res = await fetch(`/api/account/${encodeURIComponent(username)}`);
+    if(!res.ok) return;
+    const remote = await res.json();
+    const local = allData[profileId] || {inventory:{}, custom:{}, trips:[]};
+    // Server wins for inventory/custom and any trip it already knows about; trips
+    // that only exist locally (e.g. created seconds ago, not synced yet) are kept.
+    const remoteTripIds = new Set((remote.trips || []).map(t=>t.id));
+    const onlyLocal = (local.trips || []).filter(t=>!remoteTripIds.has(t.id));
+    allData[profileId] = {
+      inventory: remote.inventory || {},
+      custom: remote.custom || {},
+      trips: [...(remote.trips || []), ...onlyLocal]
+    };
+    saveJSON('tripGear.data', allData);
+  }catch(e){ /* offline - keep working from local cache */ }
+  scheduleAccountSync(); // push back so any local-only additions get backed up too
+}
 
 /* ---------- APP NAV STATE ---------- */
 
@@ -1134,6 +1188,12 @@ function initApp(){
     saveJSON('tripGear.activeProfileId', activeProfileId);
   }
   const p = activeProfile();
+  // Launch instantly from the local cache, then reconcile with the database
+  // in the background (and re-render if the user is still on an affected screen).
+  pullAccountFromServer(p.id, usernameKey(p.name)).then(()=>{
+    if(currentScreen === 'screen-home') renderHome();
+    if(currentScreen === 'screen-mytrips') renderMyTrips();
+  });
   if(!p.onboarded){
     openInventory('onboarding');
   } else {
@@ -1148,6 +1208,7 @@ function submitOnboardingName(){
   activeProfileId = p.id;
   saveJSON('tripGear.profiles', profiles);
   saveJSON('tripGear.activeProfileId', activeProfileId);
+  pullAccountFromServer(p.id, usernameKey(p.name)); // in case this name already has data from another device
   openInventory('onboarding');
 }
 
@@ -1191,10 +1252,11 @@ function renderProfiles(){
   });
 }
 
-function selectProfile(id){
+async function selectProfile(id){
   activeProfileId = id;
   saveJSON('tripGear.activeProfileId', activeProfileId);
   const p = activeProfile();
+  await pullAccountFromServer(id, usernameKey(p.name));
   if(!p.onboarded) openInventory('onboarding');
   else goHome();
 }
@@ -1975,6 +2037,15 @@ applyMusicPlayback(); // best-effort; browsers may block until a real user gestu
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
+  });
+  // When a new service worker takes over (i.e. a new deployment was picked up),
+  // reload once so the page actually shows the new version instead of staying
+  // on the old cached one until the user manually refreshes.
+  let swRefreshedOnce = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (swRefreshedOnce) return;
+    swRefreshedOnce = true;
+    location.reload();
   });
 }
 </script>
