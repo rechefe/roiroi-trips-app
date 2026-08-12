@@ -8,7 +8,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { name, answers, packed, username } = req.body || {};
+  const { name, answers, packed, excluded, username } = req.body || {};
   if (!name || !answers) {
     return res.status(400).json({ error: 'Missing name or answers' });
   }
@@ -22,8 +22,8 @@ export default async function handler(req, res) {
       const code = generateCode();
       try {
         await sql`
-          INSERT INTO trips (code, name, answers, packed, participants)
-          VALUES (${code}, ${name}, ${JSON.stringify(answers)}::jsonb, ${JSON.stringify(packed || {})}::jsonb, ${JSON.stringify(participants)}::jsonb)
+          INSERT INTO trips (code, name, answers, packed, participants, excluded)
+          VALUES (${code}, ${name}, ${JSON.stringify(answers)}::jsonb, ${JSON.stringify(packed || {})}::jsonb, ${JSON.stringify(participants)}::jsonb, ${JSON.stringify(excluded || {})}::jsonb)
         `;
         return res.status(201).json({ code, participants });
       } catch (e) {

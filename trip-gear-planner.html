@@ -321,6 +321,20 @@
   .item-row.locked{opacity:.75;}
   .item-row.locked input[type=checkbox]{cursor:not-allowed;}
   .item-row.locked label{cursor:default;}
+  .no-need-btn{
+    background:none;
+    border:1.5px solid var(--border);
+    border-radius:999px;
+    color:var(--muted);
+    cursor:pointer;
+    font-size:.72rem;
+    font-weight:600;
+    padding:5px 10px;
+    white-space:nowrap;
+    flex:none;
+    transition:background-color .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .no-need-btn:hover{background:var(--red-light); color:var(--red); border-color:var(--red);}
   .claimed-by{
     display:inline-block;
     font-size:.72rem;
@@ -1516,7 +1530,9 @@ function generateList(){
     createdAt: Date.now(),
     answers,
     packed: {},
-    personalPacked: {}
+    personalPacked: {},
+    excluded: {},
+    personalExcluded: {}
   };
   currentData().trips.unshift(trip);
   saveData();
@@ -1542,7 +1558,7 @@ function allItemsForCategory(catId){
 
 /* ---------- TRIP LIST ---------- */
 
-function renderItemRow(it, packedMap, toggleFnName, inv, opts){
+function renderItemRow(it, packedMap, toggleFnName, inv, opts, excludeFnName){
   opts = opts || {};
   const raw = packedMap[it.id];
   const isPacked = !!raw;
@@ -1556,19 +1572,20 @@ function renderItemRow(it, packedMap, toggleFnName, inv, opts){
     <input type="checkbox" ${isPacked?'checked':''} ${lockedByOther?'disabled':''} onchange="${toggleFnName}('${it.id}', this.checked)">
     <label onclick="event.preventDefault(); document.getElementById('chk_${toggleFnName}_${it.id}')?.click();">${displayItemName(it, inv)}${lockedByOther ? `<span class="claimed-by">✓ ${escapeHtml(claimedBy)}</span>` : ''}</label>
     <span class="badge ${owned?'have':'need'}">${owned?'יש לי':'צריך להשיג'}</span>
+    <button type="button" class="no-need-btn" onclick="${excludeFnName}('${it.id}')" title="הסר פריט זה מרשימת הטיול">אין צורך</button>
   `;
   row.querySelector('input').id = 'chk_' + toggleFnName + '_' + it.id;
   return row;
 }
 
-function renderCategoryBlock(cat, items, packedMap, toggleFnName, inv, opts){
+function renderCategoryBlock(cat, items, packedMap, toggleFnName, inv, opts, excludeFnName){
   if(items.length===0) return null;
   const block = document.createElement('div');
   block.className = 'card category-block';
   const h3 = document.createElement('h3');
   h3.innerHTML = `<span>${cat.icon}</span> ${cat.name}`;
   block.appendChild(h3);
-  items.forEach(it=>block.appendChild(renderItemRow(it, packedMap, toggleFnName, inv, opts)));
+  items.forEach(it=>block.appendChild(renderItemRow(it, packedMap, toggleFnName, inv, opts, excludeFnName)));
   return block;
 }
 
@@ -1577,6 +1594,8 @@ function renderList(tripId){
   const trip = currentData().trips.find(t=>t.id===tripId);
   if(!trip){ goHome(); return; }
   if(!trip.personalPacked) trip.personalPacked = {};
+  if(!trip.excluded) trip.excluded = {};
+  if(!trip.personalExcluded) trip.personalExcluded = {};
   if(trip.shared) startShareSync(tripId); else stopShareSync();
 
   const tags = tagsFromAnswers(trip.answers);
@@ -1626,9 +1645,9 @@ function renderList(tripId){
   if(!isGroup){
     if(quicknav) quicknav.style.display = 'none';
     CATEGORIES.forEach(cat=>{
-      const items = allItemsForCategory(cat.id).filter(it=> it.tags.some(t=>tags.has(t)) );
+      const items = allItemsForCategory(cat.id).filter(it=> it.tags.some(t=>tags.has(t)) && !trip.excluded[it.id]);
       tally(items, trip.packed);
-      const block = renderCategoryBlock(cat, items, trip.packed, 'togglePacked', inv, jointOpts);
+      const block = renderCategoryBlock(cat, items, trip.packed, 'togglePacked', inv, jointOpts, 'excludeItem');
       if(block) container.appendChild(block);
     });
   } else {
@@ -1640,9 +1659,9 @@ function renderList(tripId){
     personalTitle.innerHTML = `<span class="badge-icon">🧍</span> ציוד אישי <span class="sub">מוצג ונשמר רק אצלך — לא משותף</span>`;
     personalSection.appendChild(personalTitle);
     CATEGORIES.forEach(cat=>{
-      const items = allItemsForCategory(cat.id).filter(it=> it.tags.some(t=>tags.has(t)) && !it.shared);
+      const items = allItemsForCategory(cat.id).filter(it=> it.tags.some(t=>tags.has(t)) && !it.shared && !trip.personalExcluded[it.id]);
       tally(items, trip.personalPacked);
-      const block = renderCategoryBlock(cat, items, trip.personalPacked, 'togglePersonalPacked', inv);
+      const block = renderCategoryBlock(cat, items, trip.personalPacked, 'togglePersonalPacked', inv, null, 'excludePersonalItem');
       if(block) personalSection.appendChild(block);
     });
     container.appendChild(personalSection);
@@ -1655,9 +1674,9 @@ function renderList(tripId){
     groupTitle.innerHTML = `<span class="badge-icon">👥</span> ציוד קבוצתי <span class="sub">משותף ומעודכן בזמן אמת לכל המשתתפים</span>`;
     groupSection.appendChild(groupTitle);
     CATEGORIES.forEach(cat=>{
-      const items = allItemsForCategory(cat.id).filter(it=> it.tags.some(t=>tags.has(t)) && !!it.shared);
+      const items = allItemsForCategory(cat.id).filter(it=> it.tags.some(t=>tags.has(t)) && !!it.shared && !trip.excluded[it.id]);
       tally(items, trip.packed);
-      const block = renderCategoryBlock(cat, items, trip.packed, 'togglePacked', inv, jointOpts);
+      const block = renderCategoryBlock(cat, items, trip.packed, 'togglePacked', inv, jointOpts, 'excludeItem');
       if(block) groupSection.appendChild(block);
     });
     container.appendChild(groupSection);
@@ -1735,11 +1754,34 @@ function togglePersonalPacked(id, checked){
   renderList(currentTripId);
 }
 
+// Removes an item from a trip's list entirely ("no need"). Shared/joint items sync to the server.
+function excludeItem(id){
+  const trip = currentData().trips.find(t=>t.id===currentTripId);
+  if(!trip) return;
+  if(!trip.excluded) trip.excluded = {};
+  trip.excluded[id] = true;
+  saveData();
+  renderList(currentTripId);
+  syncPackedToServer(trip);
+}
+
+// Personal gear on a group trip: local only, never synced to the server (private per participant)
+function excludePersonalItem(id){
+  const trip = currentData().trips.find(t=>t.id===currentTripId);
+  if(!trip) return;
+  if(!trip.personalExcluded) trip.personalExcluded = {};
+  trip.personalExcluded[id] = true;
+  saveData();
+  renderList(currentTripId);
+}
+
 function resetPacked(){
   const trip = currentData().trips.find(t=>t.id===currentTripId);
   if(!trip) return;
   trip.packed = {};
   trip.personalPacked = {};
+  trip.excluded = {};
+  trip.personalExcluded = {};
   saveData();
   renderList(currentTripId);
   syncPackedToServer(trip);
@@ -1782,6 +1824,7 @@ function startShareSync(tripId){
     const t = currentData().trips.find(t=>t.id===tripId);
     if(!t) return;
     t.packed = data.packed || {};
+    t.excluded = data.excluded || {};
     t.participants = data.participants || [];
     if(data.name) t.name = data.name;
     saveData();
@@ -1796,7 +1839,7 @@ function syncPackedToServer(trip){
   fetch(`/api/trips/${encodeURIComponent(trip.shareCode)}`, {
     method:'PATCH',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ packed: trip.packed })
+    body: JSON.stringify({ packed: trip.packed, excluded: trip.excluded || {} })
   }).catch(()=>{});
 }
 
@@ -1888,7 +1931,7 @@ async function shareTrip(tripId){
     const res = await fetch('/api/trips', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ name: trip.name, answers: trip.answers, packed: initialPacked, username })
+      body: JSON.stringify({ name: trip.name, answers: trip.answers, packed: initialPacked, excluded: trip.excluded || {}, username })
     });
     if(!res.ok) throw new Error('share failed');
     const { code, participants } = await res.json();
@@ -1924,6 +1967,8 @@ async function joinTripByCode(code){
     answers: data.answers,
     packed: data.packed || {},
     personalPacked: {},
+    excluded: data.excluded || {},
+    personalExcluded: {},
     participants: data.participants || [],
     shared: true,
     shareCode: code
@@ -1976,9 +2021,13 @@ function renderMyTrips(){
     const tags = tagsFromAnswers(trip.answers);
     const isGroup = trip.answers && trip.answers.tripMode === 'group';
     const personalPacked = trip.personalPacked || {};
+    const excluded = trip.excluded || {};
+    const personalExcluded = trip.personalExcluded || {};
     let total = 0, packedCount = 0;
     CATEGORIES.forEach(cat=>{
       allItemsForCategory(cat.id).filter(it=>it.tags.some(t=>tags.has(t))).forEach(it=>{
+        const isExcluded = (isGroup && !it.shared) ? personalExcluded[it.id] : excluded[it.id];
+        if(isExcluded) return;
         total++;
         const map = (isGroup && !it.shared) ? personalPacked : trip.packed;
         if(map[it.id]) packedCount++;
